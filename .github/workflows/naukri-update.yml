@@ -1,12 +1,8 @@
 name: Naukri profile refresh
 
 on:
-  schedule:
-    # IST = UTC+5:30. Runs ~9:10, ~13:10, ~18:10 IST, plus 0-15 min random jitter.
-    # GitHub may start scheduled runs a few minutes late; that's fine here.
-    - cron: '40 3 * * *'
-    - cron: '40 7 * * *'
-    - cron: '40 12 * * *'
+  # Scheduled runs are OFF: Naukri's CDN (Akamai) returns "Access Denied" to GitHub's servers.
+  # The laptop runner in windows/ does the scheduled refresh instead. Manual runs are kept for testing.
   workflow_dispatch: {}
 
 concurrency:
