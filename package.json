@@ -1,0 +1,13 @@
+{
+  "name": "naukri-auto-update",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "update": "node update.js",
+    "update:watch": "node -e \"process.env.HEADLESS='false'; require('./update.js')\"",
+    "save-session": "node save-session.js"
+  },
+  "dependencies": {
+    "playwright": "^1.47.0"
+  }
+}

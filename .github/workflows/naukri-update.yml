@@ -1,0 +1,67 @@
+name: Naukri profile refresh
+
+on:
+  schedule:
+    # IST = UTC+5:30. Runs ~9:10, ~13:10, ~18:10 IST, plus 0-15 min random jitter.
+    # GitHub may start scheduled runs a few minutes late; that's fine here.
+    - cron: '40 3 * * *'
+    - cron: '40 7 * * *'
+    - cron: '40 12 * * *'
+  workflow_dispatch: {}
+
+concurrency:
+  group: naukri-update
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - run: npm install --no-audit --no-fund
+      - run: npx playwright install --with-deps chromium
+
+      # Reuse the most recent logged-in session so we rarely hit the login/OTP page.
+      - name: Restore session
+        uses: actions/cache/restore@v4
+        with:
+          path: state.json
+          key: naukri-state-${{ github.run_id }}
+          restore-keys: naukri-state-
+
+      - name: Seed session from secret if no cached one
+        env:
+          NAUKRI_STATE: ${{ secrets.NAUKRI_STATE }}
+        run: |
+          if [ ! -f state.json ] && [ -n "$NAUKRI_STATE" ]; then
+            echo "$NAUKRI_STATE" | base64 -d > state.json
+            echo "seeded session from secret"
+          fi
+
+      - name: Update headline
+        env:
+          NAUKRI_EMAIL: ${{ secrets.NAUKRI_EMAIL }}
+          NAUKRI_PASSWORD: ${{ secrets.NAUKRI_PASSWORD }}
+          JITTER_MAX_MIN: ${{ github.event_name == 'schedule' && '15' || '0' }}
+        run: node update.js
+
+      - name: Save session
+        if: success()
+        uses: actions/cache/save@v4
+        with:
+          path: state.json
+          key: naukri-state-${{ github.run_id }}
+
+      - name: Upload failure screenshots
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: naukri-debug-${{ github.run_id }}
+          path: debug/
+          retention-days: 7

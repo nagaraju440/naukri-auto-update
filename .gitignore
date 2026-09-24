@@ -1,0 +1,7 @@
+node_modules/
+state.json
+state.b64.txt
+.env
+debug/
+windows/secrets.bat
+windows/run.log
