@@ -57,6 +57,24 @@ async function isLoggedOut(page) {
   return pw.isVisible().catch(() => false);
 }
 
+// Wait until the page is clearly one of: real profile, login form, or a block page.
+async function pageState(page, timeout = 25000) {
+  const deadline = Date.now() + timeout;
+  while (Date.now() < deadline) {
+    const body = ((await page.locator('body').innerText().catch(() => '')) || '').slice(0, 20000);
+    if (/access denied|you don't have permission|request blocked|unusual traffic/i.test(body)) return 'blocked';
+    if (/resume headline/i.test(body)) return 'profile';
+    if (await isLoggedOut(page)) return 'login';
+    await sleep(1000);
+  }
+  return 'unknown';
+}
+
+async function describe(page) {
+  const body = ((await page.locator('body').innerText().catch(() => '')) || '').replace(/\s+/g, ' ').slice(0, 300);
+  log(`url=${page.url()} title="${await page.title().catch(() => '')}" text="${body}"`);
+}
+
 async function login(page) {
   if (!EMAIL || !PASSWORD) throw new Error('Session expired and NAUKRI_EMAIL / NAUKRI_PASSWORD are not set.');
   log('logging in');
@@ -101,14 +119,51 @@ async function openHeadlineEditor(page) {
   const edit = await firstVisible(page, [
     '#lazyResumeHead .edit',
     '.resumeHeadline .edit',
-    (p) => p.locator('div.card, div.widgetHead, section, div')
-      .filter({ has: p.getByText(/^\s*Resume headline\s*$/i) })
-      .locator('.edit, span.edit, [class*="edit"]'),
-  ], 20000);
-  if (!edit) throw new Error('Resume headline edit button not found.');
-  await edit.scrollIntoViewIfNeeded();
-  await human();
-  await edit.click();
+  ], 10000);
+  if (edit) {
+    await edit.scrollIntoViewIfNeeded();
+    await human();
+    await edit.click();
+  } else {
+    // Fallback: find the "Resume headline" heading, walk up a few levels, click the first edit-like control.
+    const clicked = await page.evaluate(() => {
+      const bad = /delete|trash|remove|download|upload/i;
+      const sigOf = (el) =>
+        `${el.className && el.className.baseVal !== undefined ? el.className.baseVal : el.className || ''} ${el.getAttribute('aria-label') || ''} ${el.getAttribute('title') || ''}`;
+      // Innermost elements whose whole text is "Resume headline", excluding sidebar links.
+      let heads = [...document.querySelectorAll('span,div,h1,h2,h3,h4,p,label')].filter(
+        (e) => /^\s*resume headline\s*$/i.test(e.textContent || '') && !e.closest('a'),
+      );
+      heads = heads.filter((h) => !heads.some((o) => o !== h && h.contains(o)));
+      // The edit pencil must sit on the SAME LINE, just to the right of the heading.
+      // This geometric check means we can never click an icon belonging to another section (e.g. delete resume).
+      for (const h of heads.reverse()) {
+        const hr = h.getBoundingClientRect();
+        if (!hr.width) continue;
+        const cands = [...document.querySelectorAll('span, i, em, img, svg, button')].filter((el) => {
+          if (h.contains(el) || el.contains(h) || el.closest('a')) return false;
+          if ((el.textContent || '').trim().length > 3) return false; // icons only (allow glyphs like ✎)
+          if (bad.test(sigOf(el))) return false;
+          const r = el.getBoundingClientRect();
+          if (!r.width || r.width > 60 || r.height > 60) return false;
+          const midY = r.top + r.height / 2;
+          return midY >= hr.top - 8 && midY <= hr.bottom + 8 && r.left >= hr.right - 2 && r.left - hr.right < 120;
+        });
+        cands.sort((a, b) => a.getBoundingClientRect().left - b.getBoundingClientRect().left);
+        const btn = cands.find((el) => /edit|pencil/i.test(sigOf(el))) || cands[0];
+        if (btn) {
+          btn.scrollIntoView({ block: 'center' });
+          btn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+          return true;
+        }
+      }
+      return false;
+    });
+    if (!clicked) {
+      await describe(page);
+      throw new Error('Resume headline edit button not found.');
+    }
+  }
 
   const textarea = await firstVisible(page, [
     '#resumeHeadlineTxt',
@@ -141,12 +196,25 @@ async function run() {
 
   try {
     await page.goto(PROFILE_URL, { waitUntil: 'domcontentloaded' });
-    await sleep(4000);
-    if (await isLoggedOut(page)) {
+    let state = await pageState(page);
+    log(`first load: ${state}`);
+    if (state === 'blocked') {
+      await describe(page);
+      throw new Error('Naukri blocked this server (Access Denied). Cloud IPs are being refused; use the laptop runner.');
+    }
+    if (state !== 'profile') {
       await login(page);
       await page.goto(PROFILE_URL, { waitUntil: 'domcontentloaded' });
-      await sleep(4000);
-      if (await isLoggedOut(page)) throw new Error('Still not logged in after login attempt.');
+      state = await pageState(page);
+      log(`after login: ${state}`);
+      if (state === 'blocked') {
+        await describe(page);
+        throw new Error('Naukri blocked this server after login (Access Denied).');
+      }
+      if (state !== 'profile') {
+        await describe(page);
+        throw new Error('Could not reach the profile page after login.');
+      }
     }
     log('on profile page');
 
